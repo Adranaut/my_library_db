@@ -1,5 +1,7 @@
 import { Pool } from "pg";
 import { nanoid } from "nanoid";
+import cache from "../../../utils/cache.js";
+import { mapBookToModel } from "../mapping/index.js";
 
 class BookRepositories {
   constructor() {
@@ -40,15 +42,17 @@ class BookRepositories {
         updatedAt,
       ],
     };
-
     const result = await this._pool.query(query);
-
+    cache.delPattern("books");
     return result.rows[0];
   }
 
   async getBooks({ title, reading }) {
-    // const result = await this._pool.query("SELECT * FROM books");
-    // return result.rows;
+    const cacheKey = "books:all";
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
 
     let query = "SELECT * FROM books";
     const values = [];
@@ -71,18 +75,44 @@ class BookRepositories {
     }
 
     const result = await this._pool.query(query, values);
-    return result.rows;
+    const data = result.rows.map(mapBookToModel);
+
+    cache.set(cacheKey, data);
+    data.forEach((item) => {
+      if (item?.id) {
+        cache.set(`books:${item.id}`, item);
+      }
+    });
+
+    return data;
   }
 
   async getBookById(id) {
+    const cacheKey = `books:${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const allCache = cache.get("books:all");
+    if (Array.isArray(allCache)) {
+      const item = allCache.find((row) => row.id === id);
+      if (item) {
+        cache.set(cacheKey, item);
+        return item;
+      }
+      return null;
+    }
+
     const query = {
       text: "SELECT * FROM books WHERE id = $1",
       values: [id],
     };
 
     const result = await this._pool.query(query);
-
-    return result.rows[0];
+    const data = result.rows.map(mapBookToModel)[0];
+    if (data) cache.set(cacheKey, data);
+    return data;
   }
 
   async editBookById({
@@ -119,7 +149,11 @@ class BookRepositories {
     };
 
     const result = await this._pool.query(query);
-
+    if (!result.rowCount || result.rowCount === 0) {
+      return null;
+    }
+    cache.del(`books:${id}`);
+    cache.del("books:all");
     return result.rows[0];
   }
 
@@ -129,7 +163,12 @@ class BookRepositories {
       values: [id],
     };
     const result = await this._pool.query(query);
+    if (!result.rowCount || result.rowCount === 0) {
+      return null;
+    }
 
+    cache.del(`books:${id}`);
+    cache.del("books:all");
     return result.rows[0];
   }
 }
